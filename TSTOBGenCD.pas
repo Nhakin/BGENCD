@@ -5,16 +5,25 @@ interface
 {$If CompilerVersion < 18.5}
 Type
   TBytes = Array Of Byte;
-{$Else}
-Uses SysUtils;
-{$IfEnd}
 
-Function BGenCDToXml(Const AFileName : String) : TBytes;//String;
-Function XmlToBGenCD(Const AXmlString : String) : TBytes;
+Uses
+{$Else}
+Uses
+SysUtils,
+{$IfEnd}
+HsStreamEx;
+
+Procedure BGenCDToXml(AStream : IBytesStreamEx); OverLoad;
+Function  BGenCDToXml(Const AFileName : String) : AnsiString; OverLoad;
+Function  BGenCDToXml(Const ABGenData : TBytes) : AnsiString; OverLoad;
+Function  BGenCDToXml(Const ABGenData : TBytes;  AStream : IBytesStreamEx) : Boolean; OverLoad;
+Procedure XmlToBGenCD(AStream : IBytesStreamEx); OverLoad;
+Function  XmlToBGenCD(Const AXmlString : String) : TBytes; OverLoad;
+Function  XmlToBGenCD(Const AXmlString : String; AStream : IBytesStreamEx) : Boolean; OverLoad;
 
 implementation
 
-Uses Classes;
+Uses Classes, Dialogs;
 
 Const
   FileHdr = 'BGENCD>>';
@@ -58,61 +67,107 @@ Const
            'ZBg9ajWsKMGmVmp8docwBAG9vAALyeVKAfUGXASFXt4/htJmrqT6bw3XAgwAPTBz' +
            '7cfixY8AAAAASUVORK5CYII=';
 
-Function BGenCD(Const AContent : String; ASize : Integer) : TBytes;
-Var Sb   : Integer;
-    lIdx : Integer;
+Procedure BGenCD(AContent : IBytesStreamEx);
+Var lSize : Integer;
+    Sb    : Integer;
+    lIdx  : Integer;
 Begin
-  SetLength(Result, ASize);
-  Sb := (Not ASize And $1039498) Mod Length(Secret);
-  lIdx := 1;
+  lSize := AContent.Size - AContent.Position;
+  Sb := (Not lSize And $1039498) Mod Length(Secret);
+  lIdx := AContent.Position;
 
-  While ASize > 0 Do
+  While lSize > 0 Do
   Begin
     Inc(Sb);
-
-    Result[lIdx-1] := Byte(Ord(AContent[lIdx]) Xor Ord(Secret[Sb Mod Length(Secret)]));
+    AContent.Bytes[lIdx] := AContent.Bytes[lIdx] Xor Ord(Secret[Sb Mod Length(Secret)]);
 
     Inc(lIdx);
-    Dec(ASize);
+    Dec(lSize);
   End;
 End;
 
-Function BGenCDToXml(Const AFileName : String) : TBytes;
-Var lMemStrm  : TMemoryStream;
-    lFileSize : Integer;
-    lStr      : String;
+Procedure BGenCDToXml(AStream : IBytesStreamEx);
+Var lFileHdr  : String;
 Begin
-  lMemStrm := TMemoryStream.Create();
+  lFileHdr := AStream.ReadAnsiString(8);
+  If lFileHdr = FileHdr Then
+    BGenCD(AStream)
+  Else
+    Raise Exception.Create('Invalid file format.');
+End;
+
+Function BGenCDToXml(Const AFileName : String) : AnsiString;
+Var lSize : Integer;
+    lByteStrm : IBytesStreamEx;
+Begin
+  lByteStrm := TBytesStreamEx.Create();
   Try
-    lMemStrm.LoadFromFile(AFileName);
-    lFileSize := lMemStrm.Size - 8;
-    SetLength(lStr, lFileSize);
-    lMemStrm.Seek(8, soFromBeginning);
-    lMemStrm.ReadBuffer(lStr[1], lFileSize);
-    Result := BGenCD(lStr, lFileSize);
+    lByteStrm.LoadFromFile(AFileName);
+    BGenCDToXml(lByteStrm);
+    Result := lByteStrm.ReadAnsiString(lByteStrm.Size - lByteStrm.Position);
 
     Finally
-      lMemStrm.Free();
+      lByteStrm := Nil;
   End;
+End;
+
+Function BGenCDToXml(Const ABGenData : TBytes) : AnsiString;
+Var lByteStrm : IBytesStreamEx;
+Begin
+  lByteStrm := TBytesStreamEx.Create(ABGenData);
+  Try
+    BGenCDToXml(lByteStrm);
+    Result := lByteStrm.ReadAnsiString(lByteStrm.Size - lByteStrm.Position);
+
+    Finally
+      lByteStrm := Nil;
+  End;
+End;
+
+Function BGenCDToXml(Const ABGenData : TBytes;  AStream : IBytesStreamEx) : Boolean; 
+Begin
+  AStream.WriteAnsiString(BGenCDToXml(ABGenData), False);
+  Result := AStream.Size > 0;
+End;
+
+Procedure XmlToBGenCD(AStream : IBytesStreamEx);
+Var lSrc : IStringStreamEx;
+Begin
+  lSrc := TStringStreamEx.Create();
+  Try
+    lSrc.CopyFrom(AStream, 0);
+    AStream.Clear();
+    AStream.WriteAnsiString(FileHdr, False);
+    AStream.CopyFrom(lSrc, 0);
+    AStream.Seek(Length(FileHdr), soFromBeginning);
+
+    Finally
+      lSrc := Nil;
+  End;
+
+  BGenCD(AStream);
 End;
 
 Function XmlToBGenCD(Const AXmlString : String) : TBytes;
-Var lBGenCD : TBytes;
-    lMemStrm : TMemoryStream;
+Var lStrStrm  : IStringStreamEx;
 Begin
-  lMemStrm := TMemoryStream.Create();
+  lStrStrm := TStringStreamEx.Create(AXmlString);
   Try
-    lBGenCD := BGenCD(AXmlString, Length(AXmlString));
-
-    lMemStrm.WriteBuffer(FileHdr[1], Length(FileHdr));
-    lMemStrm.WriteBuffer(lBGenCD[0], Length(lBGenCD));
-    SetLength(Result, lMemStrm.Size);
-    lMemStrm.Seek(0, soFromBeginning);
-    lMemStrm.ReadBuffer(Result[0], lMemStrm.Size);
+    XmlToBGenCD(lStrStrm);
+    SetLength(Result, lStrStrm.Size);
+    Move(lStrStrm.Bytes[0], Result[0], Length(Result));
 
     Finally
-      lMemStrm.Free();
+      lStrStrm := Nil;
   End;
+End;
+
+Function XmlToBGenCD(Const AXmlString : String; AStream : IBytesStreamEx) : Boolean;
+Var lBGenCD : TBytes;
+Begin
+  lBGenCD := XmlToBGenCD(AXmlString);
+  AStream.WriteBuffer(lBGenCD[0], Length(lBGenCD));
+  Result := Length(lBGenCD) > 8;
 End;
 
 end.
